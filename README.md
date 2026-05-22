@@ -26,39 +26,55 @@ The vault graph builder detects from Obsidian Markdown:
 - GitHub repository URLs and pull request URLs
 - frontmatter fields such as `type`, `target`, `status`, `severity`, `cwe`, `tags`, `pr`, and `repo`
 
+## Installation
+
+For local development, install the package in editable mode with its development tools:
+
+```bash
+git clone https://github.com/Hinotoi-agent/security-kg
+cd security-kg
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[dev]"
+security-kg --help
+```
+
+If you only want to run the CLI from a checkout without installing it, prefix commands with
+`PYTHONPATH=src python -m security_kg.cli`.
+
 ## Source repo usage
 
 Map a repository and print a summary:
 
 ```bash
-python -m security_kg.cli map /path/to/repo
+security-kg map /path/to/repo
 ```
 
 Map a repository and persist the graph for later review:
 
 ```bash
-python -m security_kg.cli map /path/to/repo --out /path/to/repo/.security-kg
+security-kg map /path/to/repo --out /path/to/repo/.security-kg
 ```
 
 Find candidates either directly from the repo or from the persisted graph:
 
 ```bash
-python -m security_kg.cli candidates /path/to/repo
-python -m security_kg.cli candidates /path/to/repo/.security-kg
+security-kg candidates /path/to/repo
+security-kg candidates /path/to/repo/.security-kg
 ```
 
 Emit machine-readable output:
 
 ```bash
-python -m security_kg.cli map /path/to/repo --json
-python -m security_kg.cli candidates /path/to/repo/.security-kg --json
+security-kg map /path/to/repo --json
+security-kg candidates /path/to/repo/.security-kg --json
 ```
 
 Run the bundled generic smoke fixture:
 
 ```bash
-python -m security_kg.cli map examples/remote_resume_drift --out /tmp/security-kg-smoke
-python -m security_kg.cli candidates /tmp/security-kg-smoke
+security-kg map examples/remote_resume_drift --out /tmp/security-kg-smoke
+security-kg candidates /tmp/security-kg-smoke
 ```
 
 ## Obsidian finding-vault usage
@@ -66,13 +82,17 @@ python -m security_kg.cli candidates /tmp/security-kg-smoke
 Build graph artifacts in a vault:
 
 ```bash
-python -m security_kg.cli vault-graph   --vault "/path/to/example-vault"   --findings-dir "03 - Findings"   --targets-dir "02 - Targets"   --output-dir "99 - Graph"
+security-kg vault-graph \
+  --vault "/path/to/example-vault" \
+  --findings-dir "03 - Findings" \
+  --targets-dir "02 - Targets" \
+  --output-dir "99 - Graph"
 ```
 
 Dry run without writing:
 
 ```bash
-python -m security_kg.cli vault-graph --vault /path/to/example-vault --dry-run
+security-kg vault-graph --vault /path/to/example-vault --dry-run
 ```
 
 The command writes:
