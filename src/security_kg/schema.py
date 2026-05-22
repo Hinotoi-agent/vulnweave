@@ -4,8 +4,31 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-NodeKind = Literal["command", "function", "sink", "session_scope"]
-EdgeKind = Literal["defined_in", "calls", "evidence"]
+NodeKind = Literal[
+    "command",
+    "function",
+    "sink",
+    "session_scope",
+    "finding",
+    "target",
+    "repo",
+    "pull_request",
+    "cwe",
+    "cve",
+    "tag",
+    "note",
+]
+EdgeKind = Literal[
+    "defined_in",
+    "calls",
+    "evidence",
+    "wikilinks",
+    "tagged",
+    "classified_as",
+    "assigned_cve",
+    "references_repo",
+    "raised_pr",
+]
 
 
 @dataclass(frozen=True)
@@ -13,9 +36,18 @@ class Node:
     id: str
     kind: NodeKind
     name: str
-    file: str
-    line: int
+    file: str = ""
+    line: int = 0
     attrs: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def label(self) -> str:
+        return str(self.attrs.get("label") or self.name)
+
+    @property
+    def path(self) -> str | None:
+        path = self.attrs.get("path") or self.file
+        return str(path) if path else None
 
 
 @dataclass(frozen=True)
@@ -24,6 +56,10 @@ class Edge:
     target: str
     kind: EdgeKind
     attrs: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def relation(self) -> str:
+        return self.kind.replace("_", "-")
 
 
 @dataclass
@@ -37,6 +73,25 @@ class Graph:
 
     def add_edge(self, edge: Edge) -> None:
         self.edges.append(edge)
+
+    def upsert_node(self, node: Node) -> None:
+        for index, existing in enumerate(self.nodes):
+            if existing.id == node.id:
+                merged_attrs = {**existing.attrs, **node.attrs}
+                self.nodes[index] = Node(
+                    id=existing.id,
+                    kind=existing.kind,
+                    name=existing.name,
+                    file=existing.file or node.file,
+                    line=existing.line or node.line,
+                    attrs=merged_attrs,
+                )
+                return
+        self.nodes.append(node)
+
+    def add_unique_edge(self, edge: Edge) -> None:
+        if edge not in self.edges:
+            self.edges.append(edge)
 
 
 @dataclass(frozen=True)

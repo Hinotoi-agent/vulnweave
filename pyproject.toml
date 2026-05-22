@@ -5,13 +5,15 @@ build-backend = "hatchling.build"
 [project]
 name = "security-kg"
 version = "0.1.0"
-description = "Intent-aware security knowledge graph prototypes for source-code vulnerability review."
+description = "Unified security knowledge graph for source-code review and finding-vault workflows."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [{name = "Lennon"}]
 keywords = ["security", "sast", "knowledge-graph", "vulnerability-research"]
-dependencies = []
+dependencies = [
+  "PyYAML>=6.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -28,7 +30,7 @@ pythonpath = ["src"]
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "examples"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
