@@ -21,8 +21,8 @@ def export_candidate_note(
     overwrite: bool = False,
 ) -> Path:
     candidate = get_candidate(graph, candidate_id)
-    vault_path = Path(vault).expanduser().resolve()
-    out_dir = vault_path / findings_dir
+    vault_path = _existing_vault_path(vault)
+    out_dir = _findings_output_dir(vault_path, findings_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     note_path = (
         out_dir / f"Finding - {slug_title(graph.root.name)} - {slug_title(candidate.title)}.md"
@@ -148,6 +148,27 @@ Linked target: [[{target}]]
 - [ ] Disclosure path selected if needed.
 - [ ] CVE/VulnCheck request decision recorded if applicable.
 """
+
+
+def _existing_vault_path(vault: str | Path) -> Path:
+    vault_path = Path(vault).expanduser().resolve()
+    if not vault_path.exists():
+        raise FileNotFoundError(f"vault does not exist: {vault_path}")
+    if not vault_path.is_dir():
+        raise NotADirectoryError(f"vault is not a directory: {vault_path}")
+    return vault_path
+
+
+def _findings_output_dir(vault_path: Path, findings_dir: str) -> Path:
+    requested = Path(findings_dir).expanduser()
+    if requested.is_absolute():
+        raise ValueError("findings_dir must be relative to the vault")
+    if any(part == ".." for part in requested.parts):
+        raise ValueError("findings_dir must not contain '..' path segments")
+    out_dir = (vault_path / requested).resolve()
+    if out_dir != vault_path and vault_path not in out_dir.parents:
+        raise ValueError(f"findings_dir escapes the vault: {findings_dir}")
+    return out_dir
 
 
 def slug_title(value: str) -> str:

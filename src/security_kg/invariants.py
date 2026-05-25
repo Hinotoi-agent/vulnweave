@@ -31,47 +31,50 @@ def _remote_command_direct_load(
 ) -> list[Candidate]:
     candidates: list[Candidate] = []
     for command in commands:
-        if _is_remote_control_plane_command(command) and _has_direct_load_sink(sinks) and scopes:
-            sink = next(node for node in sinks if node.name in DIRECT_LOAD_SINKS)
-            scope = scopes[0]
-            handler = _handler_for(graph, command)
-            graph_path = [
-                "remote chat sender",
-                f"command {command.name} ({command.file}:{command.line})",
-            ]
-            if handler:
-                graph_path.append(f"handler {handler.name} ({handler.file}:{handler.line})")
-            graph_path.append(f"sink {sink.name} ({sink.file}:{sink.line})")
-            candidates.append(
-                Candidate(
-                    id=_candidate_id(command, sink),
-                    title=f"Remote {command.name} can reach direct session/object load",
-                    pattern="remote-command-session-direct-load",
-                    severity_hint="high",
-                    boundary="remote chat sender -> command dispatcher -> session/object restore",
-                    violated_invariant=(
-                        "Remote session-scoped actors must not invoke global restore/list/read "
-                        "operations without re-authorizing the same sender/session scope."
+        if not _is_remote_control_plane_command(command):
+            continue
+        sink = _direct_load_sink_for_command(graph, command)
+        scope = _scope_for_command(graph, command)
+        if sink is None or scope is None:
+            continue
+        handler = _handler_for(graph, command)
+        graph_path = [
+            "remote chat sender",
+            f"command {command.name} ({command.file}:{command.line})",
+        ]
+        if handler:
+            graph_path.append(f"handler {handler.name} ({handler.file}:{handler.line})")
+        graph_path.append(f"sink {sink.name} ({sink.file}:{sink.line})")
+        candidates.append(
+            Candidate(
+                id=_candidate_id(command, sink),
+                title=f"Remote {command.name} can reach direct session/object load",
+                pattern="remote-command-session-direct-load",
+                severity_hint="high",
+                boundary="remote chat sender -> command dispatcher -> session/object restore",
+                violated_invariant=(
+                    "Remote session-scoped actors must not invoke global restore/list/read "
+                    "operations without re-authorizing the same sender/session scope."
+                ),
+                graph_path=graph_path,
+                evidence=[
+                    f"{command.file}:{command.line} registers {command.name} with "
+                    f"remote_invocable={command.attrs.get('remote_invocable')!r}",
+                    f"{scope.file}:{scope.line} builds scoped session key parts "
+                    f"{', '.join(scope.attrs['parts'])}",
+                    (
+                        f"{sink.file}:{sink.line} calls {sink.name}, "
+                        "a direct object/session load sink"
                     ),
-                    graph_path=graph_path,
-                    evidence=[
-                        f"{command.file}:{command.line} registers {command.name} with "
-                        f"remote_invocable={command.attrs.get('remote_invocable')!r}",
-                        f"{scope.file}:{scope.line} builds scoped session key parts "
-                        f"{', '.join(scope.attrs['parts'])}",
-                        (
-                            f"{sink.file}:{sink.line} calls {sink.name}, "
-                            "a direct object/session load sink"
-                        ),
-                    ],
-                    proof_strategy=[
-                        "Seed one actor's session/object with a unique marker.",
-                        f"Invoke {command.name} as a different remote actor.",
-                        "Assert the first actor's ID/marker is not listed, loaded, or summarized.",
-                        "Assert the direct load sink is not reached for the wrong actor scope.",
-                    ],
-                )
+                ],
+                proof_strategy=[
+                    "Seed one actor's session/object with a unique marker.",
+                    f"Invoke {command.name} as a different remote actor.",
+                    "Assert the first actor's ID/marker is not listed, loaded, or summarized.",
+                    "Assert the direct load sink is not reached for the wrong actor scope.",
+                ],
             )
+        )
     return candidates
 
 
@@ -302,8 +305,61 @@ def _is_remote_control_plane_command(command: Node) -> bool:
     return any(word in lower_name for word in ("resume", "summary", "session", "debug"))
 
 
-def _has_direct_load_sink(sinks: list[Node]) -> bool:
-    return any(node.name in DIRECT_LOAD_SINKS for node in sinks)
+def _direct_load_sink_for_command(graph: Graph, command: Node) -> Node | None:
+    handler = _handler_for(graph, command)
+    if handler:
+        handler_sink = _direct_load_sink_called_by(graph, handler)
+        if handler_sink:
+            return handler_sink
+        return None
+    return _direct_load_sink_in_file(graph, command.file)
+
+
+def _scope_for_command(graph: Graph, command: Node) -> Node | None:
+    handler = _handler_for(graph, command)
+    if handler:
+        scope = _scope_used_by(graph, handler)
+        if scope:
+            return scope
+    return _scope_in_file(graph, command.file)
+
+
+def _direct_load_sink_called_by(graph: Graph, function: Node) -> Node | None:
+    for edge in graph.edges:
+        if edge.source != function.id or edge.kind != "calls":
+            continue
+        sink = graph.node_by_id(edge.target)
+        if sink and sink.kind == "sink" and sink.name in DIRECT_LOAD_SINKS:
+            return sink
+    return None
+
+
+def _scope_used_by(graph: Graph, function: Node) -> Node | None:
+    for edge in graph.edges:
+        if edge.source != function.id or edge.kind != "uses_scope":
+            continue
+        scope = graph.node_by_id(edge.target)
+        if scope and scope.kind == "session_scope":
+            return scope
+    return None
+
+
+def _direct_load_sink_in_file(graph: Graph, file: str) -> Node | None:
+    return next(
+        (
+            node
+            for node in graph.nodes
+            if node.kind == "sink" and node.name in DIRECT_LOAD_SINKS and node.file == file
+        ),
+        None,
+    )
+
+
+def _scope_in_file(graph: Graph, file: str) -> Node | None:
+    return next(
+        (node for node in graph.nodes if node.kind == "session_scope" and node.file == file),
+        None,
+    )
 
 
 def _candidate_id(command: Node, sink: Node) -> str:

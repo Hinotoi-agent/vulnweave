@@ -72,6 +72,92 @@ def test_flags_remote_resume_direct_load_drift(tmp_path: Path):
     assert "Seed one actor" in markdown
 
 
+def test_remote_command_direct_load_uses_handler_local_sink(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "gateway.py").write_text(
+        """
+from app import CommandSpec
+
+CommandSpec(name='/resume', handler='resume_command', remote_invocable=True)
+
+def session_key(platform, chat, thread, sender):
+    return f"{platform}:{chat}:{thread}:{sender}"
+
+def resume_command(backend, session_id):
+    return backend.load_by_id(session_id)
+
+def unrelated_debug(backend, session_id):
+    return backend.get_by_id(session_id)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    candidates = find_candidates(map_repo(repo))
+    remote = [
+        candidate
+        for candidate in candidates
+        if candidate.pattern == "remote-command-session-direct-load"
+    ]
+
+    assert len(remote) == 1
+    assert remote[0].id == "resume-load_by_id-3"
+    assert "load_by_id" in "\n".join(remote[0].evidence)
+
+
+def test_remote_command_direct_load_ignores_unrelated_repo_wide_sink(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "gateway.py").write_text(
+        """
+from app import CommandSpec
+
+CommandSpec(name='/resume', handler='resume_command', remote_invocable=True)
+
+def session_key(platform, chat, thread, sender):
+    return f"{platform}:{chat}:{thread}:{sender}"
+
+def resume_command(backend, session_id):
+    return backend.safe_resume(session_id)
+""".strip(),
+        encoding="utf-8",
+    )
+    (repo / "storage.py").write_text(
+        """
+def unrelated_admin_restore(backend, session_id):
+    return backend.load_by_id(session_id)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    patterns = {candidate.pattern for candidate in find_candidates(map_repo(repo))}
+
+    assert "remote-command-session-direct-load" not in patterns
+
+
+def test_remote_command_without_handler_falls_back_to_same_file_sink(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "gateway.py").write_text(
+        """
+from app import CommandSpec
+
+CommandSpec(name='/resume', remote_invocable=True)
+
+def session_key(platform, chat, thread, sender):
+    return f"{platform}:{chat}:{thread}:{sender}"
+
+def local_resume(backend, session_id):
+    return backend.read_by_id(session_id)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    patterns = {candidate.pattern for candidate in find_candidates(map_repo(repo))}
+
+    assert "remote-command-session-direct-load" in patterns
+
+
 def test_round_trips_graph_jsonl_and_finds_candidates(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
