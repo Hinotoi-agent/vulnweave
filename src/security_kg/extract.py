@@ -47,6 +47,33 @@ UNTRUSTED_PARAM_NAMES = {
     "filename",
     "name",
 }
+ENDPOINT_OVERRIDE_HINTS = (
+    "HOST",
+    "URL",
+    "BASE_URL",
+    "ENDPOINT",
+    "QUOTA_URL",
+    "USAGE_URL",
+    "BILLING_URL",
+    "API_URL",
+)
+ENDPOINT_OVERRIDE_EXCLUDE_HINTS = ("TOKEN_URL", "AUTH_URL", "OAUTH_URL")
+CREDENTIAL_HINTS = ("COOKIE", "TOKEN", "API_KEY", "APIKEY", "SECRET", "AUTHORIZATION", "BEARER")
+CREDENTIAL_CALL_HINTS = (
+    "cookie",
+    "token",
+    "api_key",
+    "apikey",
+    "secret",
+    "authorization",
+    "bearer",
+    "keychain",
+    "browser",
+    "credential",
+)
+HTTP_MODULE_NAMES = {"requests", "httpx", "urllib", "aiohttp"}
+HTTP_METHOD_NAMES = {"get", "post", "put", "patch", "delete", "request", "send"}
+VALIDATION_HINTS = ("valid", "allowlist", "allow_list", "check", "enforce")
 
 
 def map_repo(root: str | Path) -> Graph:
@@ -111,6 +138,52 @@ def _map_python_file(graph: Graph, repo_root: Path, path: Path) -> None:
                 graph.add_edge(Edge(source=f"file:{rel}", target=sink.id, kind="evidence"))
                 if function_id:
                     graph.add_edge(Edge(source=function_id, target=sink.id, kind="calls"))
+
+            provider_node = _provider_endpoint_control_from_call(rel, node, enclosing)
+            if provider_node is not None:
+                graph.add_node(provider_node)
+                graph.add_edge(
+                    Edge(source=file_node.id, target=provider_node.id, kind="defined_in")
+                )
+                if function_id:
+                    graph.add_edge(
+                        Edge(source=function_id, target=provider_node.id, kind="uses_endpoint")
+                    )
+
+            credential_node = _credential_source_from_call(rel, node, enclosing)
+            if credential_node is not None:
+                graph.add_node(credential_node)
+                graph.add_edge(
+                    Edge(source=file_node.id, target=credential_node.id, kind="defined_in")
+                )
+                if function_id:
+                    graph.add_edge(
+                        Edge(
+                            source=function_id,
+                            target=credential_node.id,
+                            kind="resolves_credential",
+                        )
+                    )
+
+            request_node = _request_sink_from_call(rel, node, enclosing)
+            if request_node is not None:
+                graph.add_node(request_node)
+                graph.add_edge(Edge(source=file_node.id, target=request_node.id, kind="defined_in"))
+                if function_id:
+                    graph.add_edge(
+                        Edge(source=function_id, target=request_node.id, kind="sends_request")
+                    )
+
+            validation_node = _validation_guard_from_call(rel, node, enclosing)
+            if validation_node is not None:
+                graph.add_node(validation_node)
+                graph.add_edge(
+                    Edge(source=file_node.id, target=validation_node.id, kind="defined_in")
+                )
+                if function_id:
+                    graph.add_edge(
+                        Edge(source=function_id, target=validation_node.id, kind="guarded_by")
+                    )
 
     for command_id, handler_name in pending_command_handlers:
         handler_id = function_ids.get(handler_name)
@@ -276,6 +349,144 @@ def _call_name(func: ast.expr) -> str:
     if isinstance(func, ast.Attribute):
         return func.attr
     return ""
+
+
+def _dotted_call_name(func: ast.expr) -> str:
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        parent = _dotted_call_name(func.value)
+        return f"{parent}.{func.attr}" if parent else func.attr
+    return ""
+
+
+def _provider_endpoint_control_from_call(
+    rel: str,
+    node: ast.Call,
+    enclosing: ast.FunctionDef | ast.AsyncFunctionDef | None,
+) -> Node | None:
+    env_name = _environment_key_from_call(node)
+    if not env_name or not _looks_like_endpoint_override(env_name):
+        return None
+    return Node(
+        id=f"provider_endpoint_control:{rel}:{env_name}:{node.lineno}:{node.col_offset}",
+        kind="provider_endpoint_control",
+        name=env_name,
+        file=rel,
+        line=node.lineno,
+        attrs={
+            "source": "environment",
+            "expression": _safe_unparse(node),
+            "enclosing_function": enclosing.name if enclosing else None,
+        },
+    )
+
+
+def _credential_source_from_call(
+    rel: str,
+    node: ast.Call,
+    enclosing: ast.FunctionDef | ast.AsyncFunctionDef | None,
+) -> Node | None:
+    env_name = _environment_key_from_call(node)
+    call_text = _dotted_call_name(node.func).lower()
+    expression = _safe_unparse(node)
+    if env_name and any(hint in env_name.upper() for hint in CREDENTIAL_HINTS):
+        name = env_name
+        source = "environment"
+    elif any(hint in call_text for hint in CREDENTIAL_CALL_HINTS):
+        name = _dotted_call_name(node.func)
+        source = "call"
+    else:
+        return None
+    return Node(
+        id=f"credential_source:{rel}:{name}:{node.lineno}:{node.col_offset}",
+        kind="credential_source",
+        name=name,
+        file=rel,
+        line=node.lineno,
+        attrs={
+            "source": source,
+            "expression": expression,
+            "enclosing_function": enclosing.name if enclosing else None,
+        },
+    )
+
+
+def _request_sink_from_call(
+    rel: str,
+    node: ast.Call,
+    enclosing: ast.FunctionDef | ast.AsyncFunctionDef | None,
+) -> Node | None:
+    dotted = _dotted_call_name(node.func)
+    parts = dotted.split(".")
+    if not parts:
+        return None
+    call_name = parts[-1]
+    module = parts[0]
+    expression = _safe_unparse(node)
+    if module not in HTTP_MODULE_NAMES and call_name not in {"urlopen"}:
+        return None
+    if call_name not in HTTP_METHOD_NAMES and call_name != "urlopen":
+        return None
+    return Node(
+        id=f"request_sink:{rel}:{dotted}:{node.lineno}:{node.col_offset}",
+        kind="request_sink",
+        name=dotted,
+        file=rel,
+        line=node.lineno,
+        attrs={
+            "expression": expression,
+            "enclosing_function": enclosing.name if enclosing else None,
+            "args": [_safe_unparse(arg) for arg in node.args],
+            "kwargs": {kw.arg: _safe_unparse(kw.value) for kw in node.keywords if kw.arg},
+            "mentions_sensitive_header": any(
+                hint.lower() in expression.lower() for hint in CREDENTIAL_CALL_HINTS
+            ),
+        },
+    )
+
+
+def _validation_guard_from_call(
+    rel: str,
+    node: ast.Call,
+    enclosing: ast.FunctionDef | ast.AsyncFunctionDef | None,
+) -> Node | None:
+    name = _dotted_call_name(node.func)
+    lower = name.lower()
+    expression = _safe_unparse(node).lower()
+    if not any(hint in lower for hint in VALIDATION_HINTS):
+        return None
+    if not any(endpoint in expression for endpoint in ("url", "host", "endpoint", "scheme")):
+        return None
+    return Node(
+        id=f"validation_guard:{rel}:{name}:{node.lineno}:{node.col_offset}",
+        kind="validation_guard",
+        name=name,
+        file=rel,
+        line=node.lineno,
+        attrs={
+            "expression": _safe_unparse(node),
+            "enclosing_function": enclosing.name if enclosing else None,
+        },
+    )
+
+
+def _environment_key_from_call(node: ast.Call) -> str | None:
+    dotted = _dotted_call_name(node.func)
+    reads_environment = (
+        dotted.endswith("os.getenv") or dotted.endswith("environ.get") or dotted == "getenv"
+    )
+    if reads_environment and node.args:
+        value = _literal(node.args[0])
+        return value if isinstance(value, str) else None
+    return None
+
+
+def _looks_like_endpoint_override(name: str) -> bool:
+    upper = name.upper()
+    if any(excluded in upper for excluded in ENDPOINT_OVERRIDE_EXCLUDE_HINTS):
+        return False
+    return any(upper.endswith(hint) or f"_{hint}_" in upper for hint in ENDPOINT_OVERRIDE_HINTS)
 
 
 def _literal(node: ast.AST) -> Any:

@@ -20,6 +20,10 @@ NodeKind = Literal[
     "cve",
     "tag",
     "note",
+    "provider_endpoint_control",
+    "credential_source",
+    "request_sink",
+    "validation_guard",
 ]
 EdgeKind = Literal[
     "defined_in",
@@ -33,6 +37,10 @@ EdgeKind = Literal[
     "assigned_cve",
     "references_repo",
     "raised_pr",
+    "uses_endpoint",
+    "resolves_credential",
+    "sends_request",
+    "guarded_by",
 ]
 
 

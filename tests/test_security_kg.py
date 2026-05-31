@@ -143,6 +143,55 @@ def get_artifact(artifact_id, db):
     assert "bearer-handle-ownership-gap" in patterns
 
 
+def test_detects_provider_endpoint_override_before_credentialed_request(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "provider.py").write_text(
+        """
+import os
+import requests
+
+
+def fetch_usage():
+    quota_url = os.getenv('ACME_CODING_PLAN_QUOTA_URL', 'https://provider.example/quota')
+    cookie = load_browser_cookie('provider.example')
+    return requests.get(quota_url, headers={'Cookie': cookie})
+""".strip(),
+        encoding="utf-8",
+    )
+
+    graph = map_repo(repo)
+    patterns = {candidate.pattern for candidate in find_candidates(graph)}
+    assert any(node.kind == "provider_endpoint_control" for node in graph.nodes)
+    assert any(node.kind == "credential_source" for node in graph.nodes)
+    assert any(node.kind == "request_sink" for node in graph.nodes)
+    assert "provider-endpoint-override-secret-exfiltration" in patterns
+
+
+def test_provider_endpoint_override_guard_before_credentials_suppresses_candidate(
+    tmp_path: Path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "provider.py").write_text(
+        """
+import os
+import requests
+
+
+def fetch_usage():
+    quota_url = os.getenv('ACME_CODING_PLAN_QUOTA_URL', 'https://provider.example/quota')
+    validate_https_endpoint(quota_url)
+    cookie = load_browser_cookie('provider.example')
+    return requests.get(quota_url, headers={'Cookie': cookie})
+""".strip(),
+        encoding="utf-8",
+    )
+
+    patterns = {candidate.pattern for candidate in find_candidates(map_repo(repo))}
+    assert "provider-endpoint-override-secret-exfiltration" not in patterns
+
+
 def write_vulnerable_fixture(repo: Path) -> None:
     (repo / "gateway.py").write_text(
         """
