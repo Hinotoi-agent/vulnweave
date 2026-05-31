@@ -13,6 +13,10 @@ def find_candidates(graph: Graph) -> list[Candidate]:
     routes = [node for node in graph.nodes if node.kind in {"route", "webhook"}]
     sinks = [node for node in graph.nodes if node.kind == "sink"]
     scopes = [node for node in graph.nodes if node.kind == "session_scope"]
+    endpoint_controls = [node for node in graph.nodes if node.kind == "provider_endpoint_control"]
+    credential_sources = [node for node in graph.nodes if node.kind == "credential_source"]
+    request_sinks = [node for node in graph.nodes if node.kind == "request_sink"]
+    validation_guards = [node for node in graph.nodes if node.kind == "validation_guard"]
 
     candidates.extend(_remote_command_direct_load(graph, commands, sinks, scopes))
     candidates.extend(_list_filter_direct_load_drift(sinks, scopes))
@@ -20,6 +24,11 @@ def find_candidates(graph: Graph) -> list[Candidate]:
     candidates.extend(_upload_write_path_risk(sinks, commands, routes))
     candidates.extend(_prompt_tool_boundary_risk(sinks, commands, routes))
     candidates.extend(_public_route_privileged_action(routes, sinks))
+    candidates.extend(
+        _provider_endpoint_credential_exfil(
+            endpoint_controls, credential_sources, request_sinks, validation_guards
+        )
+    )
     return _dedupe(candidates)
 
 
@@ -292,6 +301,108 @@ def _public_route_privileged_action(routes: list[Node], sinks: list[Node]) -> li
             ],
         )
     ]
+
+
+def _provider_endpoint_credential_exfil(
+    endpoint_controls: list[Node],
+    credential_sources: list[Node],
+    request_sinks: list[Node],
+    validation_guards: list[Node],
+) -> list[Candidate]:
+    candidates: list[Candidate] = []
+    for endpoint in endpoint_controls:
+        function_name = endpoint.attrs.get("enclosing_function")
+        same_file_credentials = [node for node in credential_sources if node.file == endpoint.file]
+        same_file_requests = [node for node in request_sinks if node.file == endpoint.file]
+        credentials = [
+            node
+            for node in same_file_credentials
+            if function_name and node.attrs.get("enclosing_function") == function_name
+        ] or same_file_credentials
+        requests = [
+            node
+            for node in same_file_requests
+            if function_name and node.attrs.get("enclosing_function") == function_name
+        ] or same_file_requests
+        if not credentials or not requests:
+            continue
+
+        credential = min(credentials, key=lambda node: node.line)
+        request = min(requests, key=lambda node: node.line)
+        guards = [
+            node
+            for node in validation_guards
+            if node.file == endpoint.file
+            and (not function_name or node.attrs.get("enclosing_function") in {function_name, None})
+        ]
+        guard_before_credential = next(
+            (node for node in guards if endpoint.line <= node.line < credential.line), None
+        )
+        if guard_before_credential is not None:
+            # Validation before credential discovery matches the desired invariant;
+            # keep this as graph evidence but do not emit a review candidate.
+            continue
+
+        candidates.append(
+            Candidate(
+                id=f"provider-endpoint-credential-exfil-{endpoint.file}-{endpoint.line}",
+                title="Provider endpoint override can reach credentialed request construction",
+                pattern="provider-endpoint-override-secret-exfiltration",
+                severity_hint="high",
+                boundary=(
+                    "local/config/environment-controlled provider endpoint -> "
+                    "browser/API/keychain credential -> outbound provider request"
+                ),
+                violated_invariant=(
+                    "Provider HOST/URL overrides that influence credentialed usage or billing "
+                    "requests must be validated before cookie, API-key, bearer-token, browser, "
+                    "or keychain credential discovery and before constructing the outbound request."
+                ),
+                graph_path=[
+                    f"endpoint override {endpoint.name} ({endpoint.file}:{endpoint.line})",
+                    f"credential source {credential.name} ({credential.file}:{credential.line})",
+                    f"request sink {request.name} ({request.file}:{request.line})",
+                ],
+                evidence=[
+                    f"{endpoint.file}:{endpoint.line} reads endpoint override {endpoint.name}",
+                    (
+                        f"{credential.file}:{credential.line} resolves credential "
+                        f"material via {credential.name}"
+                    ),
+                    (
+                        f"{request.file}:{request.line} builds/sends an HTTP "
+                        f"request via {request.name}"
+                    ),
+                    (
+                        "No validation guard was detected between endpoint override resolution and "
+                        "credential discovery in the mapped function/file."
+                    ),
+                ],
+                proof_strategy=[
+                    (
+                        "Set the provider HOST/URL override to a local listener "
+                        "using an explicit http:// URL."
+                    ),
+                    (
+                        "Configure only dummy/redacted provider credentials or "
+                        "use an isolated test cookie/API key; never publish real values."
+                    ),
+                    (
+                        "Trigger the provider usage/billing fetch and assert the invalid endpoint "
+                        "fails closed before credential discovery or request construction."
+                    ),
+                    (
+                        "If any request reaches the listener, record which sensitive header class "
+                        "arrived and redact the actual value."
+                    ),
+                    (
+                        "Add a regression test proving validation happens before browser/keychain/"
+                        "config credential lookup for every provider mode."
+                    ),
+                ],
+            )
+        )
+    return candidates
 
 
 def _is_remote_control_plane_command(command: Node) -> bool:
