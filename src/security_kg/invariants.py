@@ -5,6 +5,8 @@ from security_kg.schema import Candidate, Graph, Node
 CONTROL_PLANE_COMMAND_NAMES = {"/resume", "/summary", "/debug", "/config", "/shell", "/tools"}
 DIRECT_LOAD_SINKS = {"load_by_id", "get_by_id", "read_by_id"}
 PRIVILEGED_CAPABILITIES = {"direct_object_load", "filesystem_write", "shell_execution", "host_tool"}
+COMMAND_PARAM_HINTS = {"cmd", "command", "shell", "args", "argv"}
+URL_PARAM_HINTS = {"url", "uri", "endpoint", "target", "callback", "webhook"}
 
 
 def find_candidates(graph: Graph) -> list[Candidate]:
@@ -21,9 +23,13 @@ def find_candidates(graph: Graph) -> list[Candidate]:
     candidates.extend(_remote_command_direct_load(graph, commands, sinks, scopes))
     candidates.extend(_list_filter_direct_load_drift(sinks, scopes))
     candidates.extend(_bearer_handle_ownership_gap(sinks, commands, routes, scopes))
-    candidates.extend(_upload_write_path_risk(sinks, commands, routes))
+    candidates.extend(_upload_write_path_risk(sinks, commands, routes, validation_guards))
     candidates.extend(_prompt_tool_boundary_risk(sinks, commands, routes))
     candidates.extend(_public_route_privileged_action(routes, sinks))
+    candidates.extend(_untrusted_shell_execution_risk(sinks, commands, routes))
+    candidates.extend(
+        _untrusted_url_request_risk(request_sinks, commands, routes, validation_guards)
+    )
     candidates.extend(
         _provider_endpoint_credential_exfil(
             endpoint_controls, credential_sources, request_sinks, validation_guards
@@ -172,12 +178,69 @@ def _bearer_handle_ownership_gap(
 
 
 def _upload_write_path_risk(
-    sinks: list[Node], commands: list[Node], routes: list[Node]
+    sinks: list[Node], commands: list[Node], routes: list[Node], validation_guards: list[Node]
 ) -> list[Candidate]:
     fs = next((node for node in sinks if node.attrs.get("capability") == "filesystem_write"), None)
     if not fs:
         return []
     entry = (routes or commands or [fs])[0]
+    path_guard = _path_validation_guard_for_sink(fs, validation_guards)
+    if path_guard is not None:
+        return [
+            Candidate(
+                id=f"validated-path-reopened-write-{fs.line}",
+                title="Validated path is later reopened by pathname for filesystem write",
+                pattern="validated-path-reopen-toctou-write-risk",
+                severity_hint="high",
+                boundary=(
+                    "uploaded/path parameter -> validation-only path check -> host filesystem write"
+                ),
+                violated_invariant=(
+                    "Path containment checks must stay coupled to the eventual write operation; "
+                    "validating a pathname and later reopening it can leave traversal, symlink, "
+                    "or rename races unless the write is anchored with dir_fd/openat/O_NOFOLLOW "
+                    "or equivalent primitives."
+                ),
+                graph_path=[
+                    f"entry {entry.name} ({entry.file}:{entry.line})",
+                    f"path guard {path_guard.name} ({path_guard.file}:{path_guard.line})",
+                    f"filesystem sink {fs.name} ({fs.file}:{fs.line})",
+                ],
+                evidence=[
+                    (
+                        f"{path_guard.file}:{path_guard.line} applies path validation guard "
+                        f"{path_guard.name}: {path_guard.attrs.get('expression')}"
+                    ),
+                    (
+                        f"{fs.file}:{fs.line} later calls filesystem sink {fs.name} with "
+                        f"arguments {fs.attrs.get('args')}"
+                    ),
+                    (
+                        "A validation guard before a path-based write is review-worthy "
+                        "unless the code proves the validated handle, not just the "
+                        "validated string, is used."
+                    ),
+                ],
+                proof_strategy=[
+                    (
+                        "Build a temp-root fixture with an attacker-controlled path under "
+                        "the allowed base."
+                    ),
+                    (
+                        "Attempt traversal, symlink, and rename-after-validation cases before the "
+                        "write/extract call."
+                    ),
+                    (
+                        "Assert writes are anchored under the expected base directory and cannot "
+                        "clobber existing files outside it."
+                    ),
+                    (
+                        "Prefer regression tests around fd-anchored openat/dir_fd/O_NOFOLLOW or "
+                        "atomic temp-file-and-rename flows."
+                    ),
+                ],
+            )
+        ]
     return [
         Candidate(
             id=f"upload-write-path-{fs.line}",
@@ -303,6 +366,172 @@ def _public_route_privileged_action(routes: list[Node], sinks: list[Node]) -> li
     ]
 
 
+def _untrusted_shell_execution_risk(
+    sinks: list[Node], commands: list[Node], routes: list[Node]
+) -> list[Candidate]:
+    candidates: list[Candidate] = []
+    for sink in sinks:
+        if sink.attrs.get("capability") != "shell_execution":
+            continue
+        function_args = set(sink.attrs.get("function_args") or [])
+        sink_args = " ".join(sink.attrs.get("args") or [])
+        commandish_args = sorted(function_args & COMMAND_PARAM_HINTS)
+        if not commandish_args and not any(arg and arg in sink_args for arg in function_args):
+            continue
+        entry = _entry_for_function(commands, routes, sink) or (routes or commands or [sink])[0]
+        candidates.append(
+            Candidate(
+                id=f"untrusted-shell-execution-{sink.file}-{sink.line}",
+                title="Caller-controlled command data can reach shell execution",
+                pattern="untrusted-command-shell-execution-risk",
+                severity_hint="high",
+                boundary=(
+                    "untrusted route/command parameter -> shell command construction -> "
+                    "host process"
+                ),
+                violated_invariant=(
+                    "Untrusted parameters must not be passed to shell/process execution without "
+                    "strict argument separation, allowlisting, and shell=False-style execution."
+                ),
+                graph_path=[
+                    f"entry {entry.name} ({entry.file}:{entry.line})",
+                    f"shell sink {sink.name} ({sink.file}:{sink.line})",
+                ],
+                evidence=[
+                    (
+                        f"{sink.file}:{sink.line} calls shell execution sink {sink.name} "
+                        f"with arguments {sink.attrs.get('args')}"
+                    ),
+                    (
+                        "The enclosing function exposes command-like parameters "
+                        f"{sorted(function_args)}."
+                    ),
+                ],
+                proof_strategy=[
+                    (
+                        "Exercise the route/command with a benign metacharacter canary "
+                        "such as '; echo VULNWEAVE'."
+                    ),
+                    "Assert inputs are parsed as data, not concatenated shell syntax.",
+                    (
+                        "Prefer tests that verify argv-list execution, allowlisted "
+                        "subcommands, and shell=False."
+                    ),
+                ],
+            )
+        )
+    return candidates
+
+
+def _untrusted_url_request_risk(
+    request_sinks: list[Node],
+    commands: list[Node],
+    routes: list[Node],
+    validation_guards: list[Node],
+) -> list[Candidate]:
+    candidates: list[Candidate] = []
+    for request in request_sinks:
+        function_args = set(request.attrs.get("function_args") or [])
+        urlish_args = sorted(function_args & URL_PARAM_HINTS)
+        request_args = " ".join(request.attrs.get("args") or [])
+        if not urlish_args and not any(
+            arg and arg in request_args for arg in function_args & URL_PARAM_HINTS
+        ):
+            continue
+        if _endpoint_validation_guard_before(request, validation_guards) is not None:
+            continue
+        entry = (
+            _entry_for_function(commands, routes, request) or (routes or commands or [request])[0]
+        )
+        candidates.append(
+            Candidate(
+                id=f"untrusted-url-request-{request.file}-{request.line}",
+                title="Caller-controlled URL can reach outbound HTTP request",
+                pattern="untrusted-url-outbound-request-ssrf-risk",
+                severity_hint="high",
+                boundary=(
+                    "untrusted route/command URL parameter -> server-side outbound "
+                    "HTTP request"
+                ),
+                violated_invariant=(
+                    "URLs supplied by remote actors must be constrained before server-side "
+                    "requests so callers cannot pivot through internal metadata services, local "
+                    "admin endpoints, or unintended schemes."
+                ),
+                graph_path=[
+                    f"entry {entry.name} ({entry.file}:{entry.line})",
+                    f"HTTP request sink {request.name} ({request.file}:{request.line})",
+                ],
+                evidence=[
+                    (
+                        f"{request.file}:{request.line} builds/sends an HTTP request via "
+                        f"{request.name} with arguments {request.attrs.get('args')}"
+                    ),
+                    (
+                        "The enclosing function exposes URL-like parameters "
+                        f"{sorted(function_args & URL_PARAM_HINTS)}."
+                    ),
+                    "No endpoint validation guard was detected before the request sink.",
+                ],
+                proof_strategy=[
+                    (
+                        "Point the URL parameter at a local listener and confirm whether "
+                        "the server connects."
+                    ),
+                    (
+                        "Try blocked targets such as localhost, link-local metadata IPs, "
+                        "file-like schemes, and redirects."
+                    ),
+                    (
+                        "Add regression tests for scheme, host/IP, DNS rebinding, "
+                        "redirect, and credential-forwarding controls."
+                    ),
+                ],
+            )
+        )
+    return candidates
+
+
+def _entry_for_function(commands: list[Node], routes: list[Node], sink: Node) -> Node | None:
+    function_name = sink.attrs.get("enclosing_function")
+    if not function_name:
+        return None
+    return next(
+        (
+            node
+            for node in [*routes, *commands]
+            if node.attrs.get("handler") == function_name or node.name == function_name
+        ),
+        None,
+    )
+
+
+def _endpoint_validation_guard_before(sink: Node, validation_guards: list[Node]) -> Node | None:
+    sink_function = sink.attrs.get("enclosing_function")
+    guards = [
+        node
+        for node in validation_guards
+        if node.file == sink.file
+        and "endpoint" in node.attrs.get("categories", [])
+        and (not sink_function or node.attrs.get("enclosing_function") in {sink_function, None})
+        and node.line <= sink.line
+    ]
+    return max(guards, key=lambda node: node.line) if guards else None
+
+
+def _path_validation_guard_for_sink(sink: Node, validation_guards: list[Node]) -> Node | None:
+    sink_function = sink.attrs.get("enclosing_function")
+    guards = [
+        node
+        for node in validation_guards
+        if node.file == sink.file
+        and "path" in node.attrs.get("categories", [])
+        and (not sink_function or node.attrs.get("enclosing_function") in {sink_function, None})
+        and node.line <= sink.line
+    ]
+    return max(guards, key=lambda node: node.line) if guards else None
+
+
 def _provider_endpoint_credential_exfil(
     endpoint_controls: list[Node],
     credential_sources: list[Node],
@@ -333,6 +562,7 @@ def _provider_endpoint_credential_exfil(
             node
             for node in validation_guards
             if node.file == endpoint.file
+            and "endpoint" in node.attrs.get("categories", [])
             and (not function_name or node.attrs.get("enclosing_function") in {function_name, None})
         ]
         guard_before_credential = next(

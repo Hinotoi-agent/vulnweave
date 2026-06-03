@@ -34,7 +34,11 @@ VulnWeave tries to make that chain explicit and reusable.
 - command/control-plane registrations like `CommandSpec(name="/resume", remote_invocable=True)`
 - actor/scope construction that mentions fields such as `sender`, `user`, or `tenant`
 - direct object/session load sinks such as `load_by_id`, `get_by_id`, and `read_by_id`
-- a first invariant: remote control-plane command + scoped session intent + global direct-load sink
+- provider endpoint overrides, credential sources, HTTP request sinks, and endpoint validation guards
+- path validation guards near filesystem write/extract sinks for symlink/TOCTOU review
+- caller-controlled command parameters that reach shell/process execution sinks
+- caller-controlled URL parameters that reach outbound HTTP requests without endpoint guards
+- invariants such as remote control-plane command + scoped session intent + global direct-load sink
 
 ### Candidate review
 

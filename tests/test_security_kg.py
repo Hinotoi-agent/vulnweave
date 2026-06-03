@@ -229,6 +229,45 @@ def get_artifact(artifact_id, db):
     assert "bearer-handle-ownership-gap" in patterns
 
 
+def test_detects_validation_only_path_reopen_write_risk(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "upload.py").write_text(
+        """
+from pathlib import Path
+
+
+def safe_resolve_path(base_dir, filename):
+    target = (Path(base_dir) / filename).resolve()
+    if not str(target).startswith(str(Path(base_dir).resolve())):
+        raise ValueError('outside base directory')
+    return target
+
+
+def save_upload(base_dir, filename, data):
+    target = safe_resolve_path(base_dir, filename)
+    open(target, 'wb').write(data)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    graph = map_repo(repo)
+    validation_guards = [node for node in graph.nodes if node.kind == "validation_guard"]
+    candidates = find_candidates(graph)
+    patterns = {candidate.pattern for candidate in candidates}
+
+    assert validation_guards
+    assert validation_guards[0].attrs["categories"] == ["path"]
+    assert "validated-path-reopen-toctou-write-risk" in patterns
+    candidate = next(
+        candidate
+        for candidate in candidates
+        if candidate.pattern == "validated-path-reopen-toctou-write-risk"
+    )
+    assert "safe_resolve_path" in "\n".join(candidate.evidence)
+    assert "openat" in "\n".join(candidate.proof_strategy)
+
+
 def test_detects_provider_endpoint_override_before_credentialed_request(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -276,6 +315,73 @@ def fetch_usage():
 
     patterns = {candidate.pattern for candidate in find_candidates(map_repo(repo))}
     assert "provider-endpoint-override-secret-exfiltration" not in patterns
+
+
+def test_detects_untrusted_command_param_to_shell_execution(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "admin.py").write_text(
+        """
+import subprocess
+
+
+@app.post('/run')
+def run_job(command):
+    return subprocess.run(command, shell=True)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    candidates = find_candidates(map_repo(repo))
+    patterns = {candidate.pattern for candidate in candidates}
+    shell = next(
+        candidate
+        for candidate in candidates
+        if candidate.pattern == "untrusted-command-shell-execution-risk"
+    )
+
+    assert "untrusted-command-shell-execution-risk" in patterns
+    assert "subprocess" not in shell.id
+    assert "shell=False" in "\n".join(shell.proof_strategy)
+
+
+def test_detects_untrusted_url_to_outbound_request_and_endpoint_guard(tmp_path: Path):
+    vulnerable_repo = tmp_path / "vulnerable"
+    vulnerable_repo.mkdir()
+    (vulnerable_repo / "fetch.py").write_text(
+        """
+import requests
+
+
+@app.get('/fetch')
+def fetch_url(url):
+    return requests.get(url)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    guarded_repo = tmp_path / "guarded"
+    guarded_repo.mkdir()
+    (guarded_repo / "fetch.py").write_text(
+        """
+import requests
+
+
+@app.get('/fetch')
+def fetch_url(url):
+    validate_endpoint_url(url)
+    return requests.get(url)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    vulnerable_patterns = {
+        candidate.pattern for candidate in find_candidates(map_repo(vulnerable_repo))
+    }
+    guarded_patterns = {candidate.pattern for candidate in find_candidates(map_repo(guarded_repo))}
+
+    assert "untrusted-url-outbound-request-ssrf-risk" in vulnerable_patterns
+    assert "untrusted-url-outbound-request-ssrf-risk" not in guarded_patterns
 
 
 def write_vulnerable_fixture(repo: Path) -> None:
