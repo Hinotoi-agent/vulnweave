@@ -317,6 +317,73 @@ def fetch_usage():
     assert "provider-endpoint-override-secret-exfiltration" not in patterns
 
 
+def test_detects_untrusted_command_param_to_shell_execution(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "admin.py").write_text(
+        """
+import subprocess
+
+
+@app.post('/run')
+def run_job(command):
+    return subprocess.run(command, shell=True)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    candidates = find_candidates(map_repo(repo))
+    patterns = {candidate.pattern for candidate in candidates}
+    shell = next(
+        candidate
+        for candidate in candidates
+        if candidate.pattern == "untrusted-command-shell-execution-risk"
+    )
+
+    assert "untrusted-command-shell-execution-risk" in patterns
+    assert "subprocess" not in shell.id
+    assert "shell=False" in "\n".join(shell.proof_strategy)
+
+
+def test_detects_untrusted_url_to_outbound_request_and_endpoint_guard(tmp_path: Path):
+    vulnerable_repo = tmp_path / "vulnerable"
+    vulnerable_repo.mkdir()
+    (vulnerable_repo / "fetch.py").write_text(
+        """
+import requests
+
+
+@app.get('/fetch')
+def fetch_url(url):
+    return requests.get(url)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    guarded_repo = tmp_path / "guarded"
+    guarded_repo.mkdir()
+    (guarded_repo / "fetch.py").write_text(
+        """
+import requests
+
+
+@app.get('/fetch')
+def fetch_url(url):
+    validate_endpoint_url(url)
+    return requests.get(url)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    vulnerable_patterns = {
+        candidate.pattern for candidate in find_candidates(map_repo(vulnerable_repo))
+    }
+    guarded_patterns = {candidate.pattern for candidate in find_candidates(map_repo(guarded_repo))}
+
+    assert "untrusted-url-outbound-request-ssrf-risk" in vulnerable_patterns
+    assert "untrusted-url-outbound-request-ssrf-risk" not in guarded_patterns
+
+
 def write_vulnerable_fixture(repo: Path) -> None:
     (repo / "gateway.py").write_text(
         """

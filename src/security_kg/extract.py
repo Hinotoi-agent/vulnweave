@@ -44,8 +44,16 @@ UNTRUSTED_PARAM_NAMES = {
     "artifact_id",
     "file_id",
     "path",
+    "url",
+    "uri",
+    "endpoint",
+    "target",
     "filename",
     "name",
+    "cmd",
+    "command",
+    "shell",
+    "args",
 }
 ENDPOINT_OVERRIDE_HINTS = (
     "HOST",
@@ -447,6 +455,7 @@ def _request_sink_from_call(
     call_name = parts[-1]
     module = parts[0]
     expression = _safe_unparse(node)
+    function_args = [arg.arg for arg in enclosing.args.args] if enclosing else []
     if module not in HTTP_MODULE_NAMES and call_name not in {"urlopen"}:
         return None
     if call_name not in HTTP_METHOD_NAMES and call_name != "urlopen":
@@ -460,8 +469,10 @@ def _request_sink_from_call(
         attrs={
             "expression": expression,
             "enclosing_function": enclosing.name if enclosing else None,
+            "function_args": function_args,
             "args": [_safe_unparse(arg) for arg in node.args],
             "kwargs": {kw.arg: _safe_unparse(kw.value) for kw in node.keywords if kw.arg},
+            "uses_untrusted_param": bool(set(function_args) & UNTRUSTED_PARAM_NAMES),
             "mentions_sensitive_header": any(
                 hint.lower() in expression.lower() for hint in CREDENTIAL_CALL_HINTS
             ),
