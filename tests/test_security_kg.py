@@ -229,6 +229,45 @@ def get_artifact(artifact_id, db):
     assert "bearer-handle-ownership-gap" in patterns
 
 
+def test_detects_validation_only_path_reopen_write_risk(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "upload.py").write_text(
+        """
+from pathlib import Path
+
+
+def safe_resolve_path(base_dir, filename):
+    target = (Path(base_dir) / filename).resolve()
+    if not str(target).startswith(str(Path(base_dir).resolve())):
+        raise ValueError('outside base directory')
+    return target
+
+
+def save_upload(base_dir, filename, data):
+    target = safe_resolve_path(base_dir, filename)
+    open(target, 'wb').write(data)
+""".strip(),
+        encoding="utf-8",
+    )
+
+    graph = map_repo(repo)
+    validation_guards = [node for node in graph.nodes if node.kind == "validation_guard"]
+    candidates = find_candidates(graph)
+    patterns = {candidate.pattern for candidate in candidates}
+
+    assert validation_guards
+    assert validation_guards[0].attrs["categories"] == ["path"]
+    assert "validated-path-reopen-toctou-write-risk" in patterns
+    candidate = next(
+        candidate
+        for candidate in candidates
+        if candidate.pattern == "validated-path-reopen-toctou-write-risk"
+    )
+    assert "safe_resolve_path" in "\n".join(candidate.evidence)
+    assert "openat" in "\n".join(candidate.proof_strategy)
+
+
 def test_detects_provider_endpoint_override_before_credentialed_request(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()

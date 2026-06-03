@@ -21,7 +21,7 @@ def find_candidates(graph: Graph) -> list[Candidate]:
     candidates.extend(_remote_command_direct_load(graph, commands, sinks, scopes))
     candidates.extend(_list_filter_direct_load_drift(sinks, scopes))
     candidates.extend(_bearer_handle_ownership_gap(sinks, commands, routes, scopes))
-    candidates.extend(_upload_write_path_risk(sinks, commands, routes))
+    candidates.extend(_upload_write_path_risk(sinks, commands, routes, validation_guards))
     candidates.extend(_prompt_tool_boundary_risk(sinks, commands, routes))
     candidates.extend(_public_route_privileged_action(routes, sinks))
     candidates.extend(
@@ -172,12 +172,69 @@ def _bearer_handle_ownership_gap(
 
 
 def _upload_write_path_risk(
-    sinks: list[Node], commands: list[Node], routes: list[Node]
+    sinks: list[Node], commands: list[Node], routes: list[Node], validation_guards: list[Node]
 ) -> list[Candidate]:
     fs = next((node for node in sinks if node.attrs.get("capability") == "filesystem_write"), None)
     if not fs:
         return []
     entry = (routes or commands or [fs])[0]
+    path_guard = _path_validation_guard_for_sink(fs, validation_guards)
+    if path_guard is not None:
+        return [
+            Candidate(
+                id=f"validated-path-reopened-write-{fs.line}",
+                title="Validated path is later reopened by pathname for filesystem write",
+                pattern="validated-path-reopen-toctou-write-risk",
+                severity_hint="high",
+                boundary=(
+                    "uploaded/path parameter -> validation-only path check -> host filesystem write"
+                ),
+                violated_invariant=(
+                    "Path containment checks must stay coupled to the eventual write operation; "
+                    "validating a pathname and later reopening it can leave traversal, symlink, "
+                    "or rename races unless the write is anchored with dir_fd/openat/O_NOFOLLOW "
+                    "or equivalent primitives."
+                ),
+                graph_path=[
+                    f"entry {entry.name} ({entry.file}:{entry.line})",
+                    f"path guard {path_guard.name} ({path_guard.file}:{path_guard.line})",
+                    f"filesystem sink {fs.name} ({fs.file}:{fs.line})",
+                ],
+                evidence=[
+                    (
+                        f"{path_guard.file}:{path_guard.line} applies path validation guard "
+                        f"{path_guard.name}: {path_guard.attrs.get('expression')}"
+                    ),
+                    (
+                        f"{fs.file}:{fs.line} later calls filesystem sink {fs.name} with "
+                        f"arguments {fs.attrs.get('args')}"
+                    ),
+                    (
+                        "A validation guard before a path-based write is review-worthy "
+                        "unless the code proves the validated handle, not just the "
+                        "validated string, is used."
+                    ),
+                ],
+                proof_strategy=[
+                    (
+                        "Build a temp-root fixture with an attacker-controlled path under "
+                        "the allowed base."
+                    ),
+                    (
+                        "Attempt traversal, symlink, and rename-after-validation cases before the "
+                        "write/extract call."
+                    ),
+                    (
+                        "Assert writes are anchored under the expected base directory and cannot "
+                        "clobber existing files outside it."
+                    ),
+                    (
+                        "Prefer regression tests around fd-anchored openat/dir_fd/O_NOFOLLOW or "
+                        "atomic temp-file-and-rename flows."
+                    ),
+                ],
+            )
+        ]
     return [
         Candidate(
             id=f"upload-write-path-{fs.line}",
@@ -303,6 +360,19 @@ def _public_route_privileged_action(routes: list[Node], sinks: list[Node]) -> li
     ]
 
 
+def _path_validation_guard_for_sink(sink: Node, validation_guards: list[Node]) -> Node | None:
+    sink_function = sink.attrs.get("enclosing_function")
+    guards = [
+        node
+        for node in validation_guards
+        if node.file == sink.file
+        and "path" in node.attrs.get("categories", [])
+        and (not sink_function or node.attrs.get("enclosing_function") in {sink_function, None})
+        and node.line <= sink.line
+    ]
+    return max(guards, key=lambda node: node.line) if guards else None
+
+
 def _provider_endpoint_credential_exfil(
     endpoint_controls: list[Node],
     credential_sources: list[Node],
@@ -333,6 +403,7 @@ def _provider_endpoint_credential_exfil(
             node
             for node in validation_guards
             if node.file == endpoint.file
+            and "endpoint" in node.attrs.get("categories", [])
             and (not function_name or node.attrs.get("enclosing_function") in {function_name, None})
         ]
         guard_before_credential = next(
