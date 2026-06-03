@@ -14,6 +14,7 @@ from security_kg.io import (
     read_graph_jsonl,
     write_graph_jsonl,
 )
+from security_kg.ranking import build_review_bundle, rank_candidate_families
 from security_kg.report import render_candidate_markdown
 from security_kg.schema import Graph
 from security_kg.vault.export import export_candidate_note
@@ -51,6 +52,31 @@ def main(argv: list[str] | None = None) -> int:
     candidates_parser.add_argument(
         "--json", action="store_true", help="Emit JSON instead of Markdown"
     )
+
+    rank_parser = subparsers.add_parser(
+        "rank",
+        help="Group candidates by vulnerability family and rank them for review priority",
+    )
+    rank_parser.add_argument(
+        "source",
+        type=Path,
+        help="Repository path or graph directory produced by `vulnweave map --out`",
+    )
+    rank_parser.add_argument("--json", action="store_true", help="Emit JSON instead of text")
+
+    bundle_parser = subparsers.add_parser(
+        "bundle",
+        help="Emit a compact ranked review bundle for low-token LLM or manual review",
+    )
+    bundle_parser.add_argument(
+        "source",
+        type=Path,
+        help="Repository path or graph directory produced by `vulnweave map --out`",
+    )
+    bundle_parser.add_argument("--top-families", type=int, default=5)
+    bundle_parser.add_argument("--snippets-per-family", type=int, default=10)
+    bundle_parser.add_argument("--max-lines-per-snippet", type=int, default=12)
+    bundle_parser.add_argument("--out", type=Path, help="Write bundle JSON to this path")
 
     export_parser = subparsers.add_parser(
         "export-finding",
@@ -122,6 +148,42 @@ def main(argv: list[str] | None = None) -> int:
                 print("No candidates found.")
             for candidate in candidates:
                 print(render_candidate_markdown(candidate))
+        return 0
+
+    if args.command == "rank":
+        graph = _load_graph_or_map_repo(args.source)
+        families = rank_candidate_families(find_candidates(graph))
+        if args.json:
+            print(json.dumps({"families": [family.__dict__ for family in families]}, indent=2, sort_keys=True))
+        else:
+            if not families:
+                print("No candidate families found.")
+            for family in families:
+                print(
+                    f"{family.review_priority.upper()} {family.family}: "
+                    f"score={family.score}, candidates={family.candidate_count}, "
+                    f"duplicate_risk={family.duplicate_risk}"
+                )
+                print(f"  invariant: {family.shared_invariant}")
+                if family.top_paths:
+                    print(f"  top paths: {', '.join(family.top_paths[:5])}")
+        return 0
+
+    if args.command == "bundle":
+        graph = _load_graph_or_map_repo(args.source)
+        bundle = build_review_bundle(
+            graph,
+            top_families=args.top_families,
+            snippets_per_family=args.snippets_per_family,
+            max_lines_per_snippet=args.max_lines_per_snippet,
+        )
+        output = json.dumps(bundle, indent=2, sort_keys=True) + "\n"
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(output, encoding="utf-8")
+            print(str(args.out))
+        else:
+            print(output, end="")
         return 0
 
     if args.command == "export-finding":
