@@ -25,7 +25,10 @@ FAMILY_RANKING_DEFAULTS = {
         "novelty": 4,
         "maintainer_value": 5,
         "duplicate_risk": 2,
-        "shared_invariant": "caller-controlled object/session handles must be re-scoped before direct load/read/update/delete operations",
+        "shared_invariant": (
+            "caller-controlled object/session handles must be re-scoped before direct "
+            "load/read/update/delete operations"
+        ),
     },
     "upload-path-containment": {
         "reachability": 4,
@@ -34,7 +37,10 @@ FAMILY_RANKING_DEFAULTS = {
         "novelty": 3,
         "maintainer_value": 5,
         "duplicate_risk": 3,
-        "shared_invariant": "untrusted filenames, paths, and archive members must be canonicalized and contained before filesystem writes",
+        "shared_invariant": (
+            "untrusted filenames, paths, and archive members must be canonicalized "
+            "and contained before filesystem writes"
+        ),
     },
     "plugin-mcp-agent-tool-boundary": {
         "reachability": 3,
@@ -43,7 +49,10 @@ FAMILY_RANKING_DEFAULTS = {
         "novelty": 5,
         "maintainer_value": 4,
         "duplicate_risk": 2,
-        "shared_invariant": "untrusted prompt/content must not silently cross into host-side tools or privileged agent capabilities",
+        "shared_invariant": (
+            "untrusted prompt/content must not silently cross into host-side tools "
+            "or privileged agent capabilities"
+        ),
     },
     "authz-public-route-privileged-action": {
         "reachability": 5,
@@ -52,7 +61,10 @@ FAMILY_RANKING_DEFAULTS = {
         "novelty": 3,
         "maintainer_value": 4,
         "duplicate_risk": 3,
-        "shared_invariant": "public routes and webhooks must authenticate or verify requests before privileged side effects",
+        "shared_invariant": (
+            "public routes and webhooks must authenticate or verify requests before "
+            "privileged side effects"
+        ),
     },
     "ssrf-provider-endpoint-secret-exfil": {
         "reachability": 3,
@@ -61,7 +73,10 @@ FAMILY_RANKING_DEFAULTS = {
         "novelty": 5,
         "maintainer_value": 5,
         "duplicate_risk": 2,
-        "shared_invariant": "provider endpoint overrides must be validated before credential discovery and credentialed request construction",
+        "shared_invariant": (
+            "provider endpoint overrides must be validated before credential discovery "
+            "and credentialed request construction"
+        ),
     },
 }
 
@@ -229,9 +244,7 @@ def _read_snippet(repo_root: Path, location: str, max_lines: int) -> dict[str, A
         "line": line,
         "start_line": start,
         "end_line": end,
-        "text": "\n".join(
-            f"{number}|{lines[number - 1]}" for number in range(start, end + 1)
-        ),
+        "text": "\n".join(f"{number}|{lines[number - 1]}" for number in range(start, end + 1)),
     }
 
 
@@ -282,10 +295,25 @@ def _missing_proof_for_family(family: str) -> list[str]:
         "minimal safe repro or negative regression",
     ]
     family_specific = {
-        "upload-path-containment": ["final path containment after canonicalization", "symlink/archive member behavior"],
-        "authz-object-ownership": ["cross-user or cross-tenant object ownership check", "sensitive asset impact"],
-        "plugin-mcp-agent-tool-boundary": ["host capability reached without approval/sandbox", "prompt/content treated as instructions"],
-        "ssrf-provider-endpoint-secret-exfil": ["credential lookup before endpoint validation", "redirect/header forwarding behavior"],
-        "authz-public-route-privileged-action": ["unauthenticated route reachability", "privileged side effect before auth/signature verification"],
+        "upload-path-containment": [
+            "final path containment after canonicalization",
+            "symlink/archive member behavior",
+        ],
+        "authz-object-ownership": [
+            "cross-user or cross-tenant object ownership check",
+            "sensitive asset impact",
+        ],
+        "plugin-mcp-agent-tool-boundary": [
+            "host capability reached without approval/sandbox",
+            "prompt/content treated as instructions",
+        ],
+        "ssrf-provider-endpoint-secret-exfil": [
+            "credential lookup before endpoint validation",
+            "redirect/header forwarding behavior",
+        ],
+        "authz-public-route-privileged-action": [
+            "unauthenticated route reachability",
+            "privileged side effect before auth/signature verification",
+        ],
     }
     return [*common, *family_specific.get(family, [])]

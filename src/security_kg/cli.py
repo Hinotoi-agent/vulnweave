@@ -154,7 +154,11 @@ def main(argv: list[str] | None = None) -> int:
         graph = _load_graph_or_map_repo(args.source)
         families = rank_candidate_families(find_candidates(graph))
         if args.json:
-            print(json.dumps({"families": [family.__dict__ for family in families]}, indent=2, sort_keys=True))
+            print(
+                json.dumps(
+                    {"families": [family.__dict__ for family in families]}, indent=2, sort_keys=True
+                )
+            )
         else:
             if not families:
                 print("No candidate families found.")
