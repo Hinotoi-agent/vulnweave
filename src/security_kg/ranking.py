@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from security_kg.invariants import find_candidates
-from security_kg.schema import Candidate, Graph
+from security_kg.schema import Candidate, Graph, Node
 
 FAMILY_BY_PATTERN = {
     "remote-command-session-direct-load": "authz-object-ownership",
@@ -113,17 +113,26 @@ def build_review_bundle(
     top_families: int = 5,
     snippets_per_family: int = 10,
     max_lines_per_snippet: int = 12,
+    novelty_signals: int = 3,
 ) -> dict[str, Any]:
     candidates = find_candidates(graph)
     families = rank_candidate_families(candidates)[:top_families]
     by_id = {candidate.id: candidate for candidate in candidates}
+    known_family_names = [family.family for family in families]
     return {
-        "schema_version": "vulnweave.review_bundle.v1",
+        "schema_version": "vulnweave.review_bundle.v2",
         "source": str(graph.root),
         "budget_policy": (
-            "Review only these ranked family bundles first; defer expensive LLM analysis "
-            "until source, boundary, sink, duplicate risk, and proof gaps are visible."
+            "Use deterministic ranked family bundles for the main review, but reserve a "
+            "small novelty lane for weird cross-component signals. Do not ask an LLM to "
+            "rediscover from the whole repo; ask it to validate one anchored bundle or "
+            "produce candidate contracts from the novelty lane."
         ),
+        "review_lanes": {
+            "known_family_validation": "70%",
+            "vault_variant_hunt": "20%",
+            "novelty_hunt": "10%",
+        },
         "family_count": len(families),
         "candidate_count": len(candidates),
         "families": [
@@ -136,6 +145,12 @@ def build_review_bundle(
             )
             for family in families
         ],
+        "novelty_lane": _build_novelty_lane(
+            graph,
+            known_family_names=known_family_names,
+            max_signals=novelty_signals,
+            max_lines_per_snippet=max_lines_per_snippet,
+        ),
     }
 
 
@@ -246,6 +261,128 @@ def _read_snippet(repo_root: Path, location: str, max_lines: int) -> dict[str, A
         "end_line": end,
         "text": "\n".join(f"{number}|{lines[number - 1]}" for number in range(start, end + 1)),
     }
+
+
+def _build_novelty_lane(
+    graph: Graph,
+    *,
+    known_family_names: list[str],
+    max_signals: int,
+    max_lines_per_snippet: int,
+) -> dict[str, Any]:
+    signals = _rank_novelty_signals(graph)[:max_signals]
+    return {
+        "purpose": (
+            "Preserve the chance of unique findings outside the built-in bug families by "
+            "showing compact, anchored weirdness signals to an LLM or human reviewer."
+        ),
+        "review_rule": (
+            "Spend a bounded pass here after known-family triage. Each signal must become a "
+            "candidate contract with boundary, source, sink, invariant, proof plan, and "
+            "duplicate-check terms before deeper validation."
+        ),
+        "excluded_known_families": known_family_names,
+        "signals": [
+            {
+                **signal,
+                "snippets": [
+                    snippet
+                    for location in signal["locations"]
+                    if (snippet := _read_snippet(graph.root, location, max_lines_per_snippet))
+                    is not None
+                ][:2],
+            }
+            for signal in signals
+        ],
+        "candidate_contract_prompt": (
+            "For each novelty signal, do not assert a bug from pattern name alone. Decide if "
+            "there is a trust-boundary crossing not already covered by excluded_known_families; "
+            "then emit a compact contract: title, affected boundary, untrusted source, privileged "
+            "sink, violated invariant, duplicate-search terms, and the cheapest safe proof."
+        ),
+    }
+
+
+def _rank_novelty_signals(graph: Graph) -> list[dict[str, Any]]:
+    by_scope: dict[str, list[Node]] = {}
+    for node in graph.nodes:
+        scope = _novelty_scope(node)
+        if not scope:
+            continue
+        by_scope.setdefault(scope, []).append(node)
+
+    signals: list[dict[str, Any]] = []
+    for scope, nodes in by_scope.items():
+        kinds = {node.kind for node in nodes}
+        capabilities = {
+            str(node.attrs.get("capability"))
+            for node in nodes
+            if node.kind == "sink" and node.attrs.get("capability")
+        }
+        categories = {
+            category
+            for node in nodes
+            if node.kind == "validation_guard"
+            for category in node.attrs.get("categories", [])
+        }
+        score = 0
+        reasons: list[str] = []
+        if {"request_sink", "credential_source"} <= kinds:
+            score += 5
+            reasons.append("credential material and outbound request construction share a scope")
+        if {"request_sink", "validation_guard"} <= kinds:
+            score += 3
+            reasons.append(
+                "network guard and request sink share a scope; review redirect/DNS/header drift"
+            )
+        if {"provider_endpoint_control", "credential_source"} <= kinds:
+            score += 4
+            reasons.append("provider endpoint override appears near credential discovery")
+        if "llm_prompt" in capabilities and (
+            capabilities & {"host_tool", "filesystem_write", "shell_execution"}
+        ):
+            score += 5
+            reasons.append("model/prompt path shares a scope with host-side capabilities")
+        if {"route", "webhook"} & kinds and (
+            capabilities
+            & {"filesystem_write", "shell_execution", "host_tool", "direct_object_load"}
+        ):
+            score += 4
+            reasons.append("remote HTTP entry shares a scope with privileged local capability")
+        if "path" in categories and "filesystem_write" in capabilities:
+            score += 3
+            reasons.append(
+                "path validation and filesystem write share a scope; review guard/write coupling"
+            )
+        if score <= 0:
+            continue
+        locations = sorted(
+            {
+                f"{node.file}:{node.line}"
+                for node in nodes
+                if node.file and node.line
+            }
+        )
+        signals.append(
+            {
+                "scope": scope,
+                "score": score,
+                "reasons": reasons,
+                "node_kinds": sorted(kinds),
+                "capabilities": sorted(capability for capability in capabilities if capability),
+                "locations": locations[:6],
+            }
+        )
+    return sorted(signals, key=lambda item: (-item["score"], item["scope"]))
+
+
+def _novelty_scope(node: Node) -> str | None:
+    function_name = node.attrs.get("enclosing_function") or node.attrs.get("handler")
+    if isinstance(function_name, str) and function_name:
+        return f"{node.file}::{function_name}"
+    if node.file:
+        return node.file
+    return None
 
 
 def _top_paths(candidates: list[Candidate]) -> list[str]:

@@ -76,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
     bundle_parser.add_argument("--top-families", type=int, default=5)
     bundle_parser.add_argument("--snippets-per-family", type=int, default=10)
     bundle_parser.add_argument("--max-lines-per-snippet", type=int, default=12)
+    bundle_parser.add_argument(
+        "--novelty-signals",
+        type=int,
+        default=3,
+        help="Number of anchored weirdness signals to include for bounded novelty hunting",
+    )
     bundle_parser.add_argument("--out", type=Path, help="Write bundle JSON to this path")
 
     export_parser = subparsers.add_parser(
@@ -180,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
             top_families=args.top_families,
             snippets_per_family=args.snippets_per_family,
             max_lines_per_snippet=args.max_lines_per_snippet,
+            novelty_signals=args.novelty_signals,
         )
         output = json.dumps(bundle, indent=2, sort_keys=True) + "\n"
         if args.out:
