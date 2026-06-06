@@ -64,11 +64,45 @@ def resume_command(backend, session_id):
         map_repo(repo), top_families=1, snippets_per_family=4, max_lines_per_snippet=6
     )
 
-    assert bundle["schema_version"] == "vulnweave.review_bundle.v1"
+    assert bundle["schema_version"] == "vulnweave.review_bundle.v2"
     assert bundle["family_count"] == 1
     family = bundle["families"][0]
     assert family["family"] == "authz-object-ownership"
     assert family["candidates"]
     assert family["snippets"]
     assert any("load_by_id" in snippet["text"] for snippet in family["snippets"])
-    assert "Review only these ranked family bundles first" in bundle["budget_policy"]
+    assert "Use deterministic ranked family bundles" in bundle["budget_policy"]
+    assert bundle["review_lanes"]["novelty_hunt"] == "10%"
+    assert "candidate_contract_prompt" in bundle["novelty_lane"]
+
+
+def test_bundle_includes_bounded_novelty_lane_for_weird_cross_component_signals(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "client.py").write_text(
+        """
+import os
+import requests
+
+
+def fetch_usage(url, token):
+    base_url = os.getenv('USAGE_URL')
+    secret = os.getenv('API_TOKEN')
+    checked = validate_url(url)
+    return requests.get(base_url or checked, headers={'Authorization': f'Bearer {secret}'})
+""".strip(),
+        encoding="utf-8",
+    )
+
+    bundle = build_review_bundle(
+        map_repo(repo), top_families=1, snippets_per_family=2, novelty_signals=1
+    )
+
+    novelty = bundle["novelty_lane"]
+    assert len(novelty["signals"]) == 1
+    signal = novelty["signals"][0]
+    assert signal["scope"] == "client.py::fetch_usage"
+    assert signal["score"] >= 8
+    assert "request_sink" in signal["node_kinds"]
+    assert "credential_source" in signal["node_kinds"]
+    assert any("Authorization" in snippet["text"] for snippet in signal["snippets"])
