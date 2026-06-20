@@ -117,7 +117,7 @@ def write_dashboard(graph: Graph, path: Path, canvas_name: str, json_name: str) 
             "## Dataview helpers",
             "",
             "```dataview",
-            "TABLE status, severity, target, pr",
+            "TABLE status, severity, cvss_score, cvss_confidence, target, pr",
             "FROM \"03 - Findings\"",
             "WHERE type = \"finding\"",
             "SORT file.mtime DESC",

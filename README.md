@@ -142,7 +142,7 @@ vulnweave export-finding /path/to/repo/.vulnweave \
   --repo-url https://github.com/example-org/example-repo
 ```
 
-The exported note includes YAML frontmatter, the graph path, evidence, a proof strategy, duplicate-check checklist, reproduction placeholders, patch/PR notes, and disclosure/CVE notes.
+The exported note includes YAML frontmatter, the graph path, evidence, a proof strategy, CVSS assessment checklist, duplicate-check checklist, reproduction placeholders, patch/PR notes, and disclosure/CVE notes.
 
 A typical candidate review loop looks like:
 
@@ -217,6 +217,7 @@ Possible duplicate: https://github.com/example-org/example-repo/pull/123
 Recommended finding sections:
 
 - **Boundary** — who controls the input and what trust boundary is crossed?
+- **CVSS assessment** — which privileges, topology assumptions, and proven C/I/A impacts support the score? Keep a conservative alternative when a maintainer could reasonably argue the score down.
 - **Invariant** — what security property should have held?
 - **Evidence** — source paths, functions, graph nodes, logs, or screenshots.
 - **Proof strategy** — the smallest safe repro needed to confirm impact.

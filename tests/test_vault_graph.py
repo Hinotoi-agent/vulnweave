@@ -21,6 +21,9 @@ type: finding
 target: Target - Example App
 status: draft
 severity: High
+cvss_vector: CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N
+cvss_score: 6.5
+cvss_confidence: reviewed
 cwe: CWE-94
 tags:
   - prompt-injection
@@ -54,6 +57,12 @@ repo: https://github.com/example-org/example-repo
     assert "#remote-to-local" in labels
     assert "CWE-94" in labels
     assert "example-org/example-repo#123" in labels
+    finding = next(
+        node for node in graph.nodes if node.label == "Finding - Example remote context poisoning"
+    )
+    assert finding.attrs["cvss_vector"] == "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:N/A:N"
+    assert finding.attrs["cvss_score"] == 6.5
+    assert finding.attrs["cvss_confidence"] == "reviewed"
     assert any(relation == "raised-pr" for _, _, relation in relations)
 
 
