@@ -44,6 +44,12 @@ def resume_command(backend, session_id):
     assert 'type: "finding"' in text
     assert 'target: "Target - Example App"' in text
     assert 'repo: "https://github.com/example-org/example-repo"' in text
+    assert 'cvss_vector: "TBD"' in text
+    assert 'cvss_score: "TBD"' in text
+    assert 'cvss_confidence: "draft"' in text
+    assert "## CVSS assessment" in text
+    assert "required privileges" in text
+    assert "tenant/profile separation" in text
     assert "## Duplicate check" in text
     assert "## Proof strategy" in text
     assert candidate.id in text

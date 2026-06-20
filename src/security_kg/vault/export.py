@@ -87,6 +87,9 @@ def render_candidate_note(
         "pattern": candidate.pattern,
         "generated_by": "vulnweave",
         "candidate_id": candidate.id,
+        "cvss_vector": "TBD",
+        "cvss_score": "TBD",
+        "cvss_confidence": "draft",
         "tags": tags,
     }
     yaml = _yaml(frontmatter)
@@ -123,6 +126,30 @@ Linked target: [[{target}]]
 ## Proof strategy
 
 {proof}
+
+## CVSS assessment
+
+Use this section to turn the severity hint into a defensible,
+evidence-backed score before disclosure or a CVE request. Do not let the
+hint stand in for CVSS.
+
+- [ ] **Actor and privileges:** record whether exploitation is unauthenticated,
+  authenticated low-privilege, maintainer/admin-only, or requires a separate
+  tenant/profile context.
+- [ ] **Deployment preconditions:** record required topology such as multi-tenant,
+  multi-profile, exposed local service, shared workspace, or import/export feature
+  availability.
+- [ ] **Impact evidence:** tie Confidentiality/Integrity/Availability choices to
+  reproduced data read, write, execution, or denial behavior.
+- [ ] **Vector rationale:** write the chosen CVSS vector and one sentence per
+  non-obvious metric.
+- [ ] **Conservative alternative:** if the score is near a severity boundary, note
+  the lower-bound vector a maintainer might reasonably choose and why the report
+  still matters.
+- [ ] **Maintainer wording:** separate “CVSS estimate” from the invariant/patch
+  rationale so a score disagreement does not weaken the fix.
+
+Suggested starting point for this candidate: `{suggested_cvss_start(candidate)}`
 
 ## Duplicate check
 
@@ -188,6 +215,32 @@ def _yaml(data: dict[str, Any]) -> str:
             rendered = str(value).replace('"', '\\"')
             lines.append(f'{key}: "{rendered}"')
     return "\n".join(lines) + "\n"
+
+
+def suggested_cvss_start(candidate: Candidate) -> str:
+    """Return a conservative review prompt rather than an automatic CVSS score.
+
+    VulnWeave candidates know the suspected invariant and severity hint, but not the
+    actual deployment topology, required privileges, or reproduced impact. Returning
+    a prompt keeps exported findings from overstating CVSS while still nudging the
+    reviewer toward metrics that commonly change maintainer discussion.
+    """
+    hint = candidate.severity_hint.strip().lower()
+    if hint in {"critical", "high"}:
+        return (
+            "start from the reproduced impact, then challenge any High/Critical score by "
+            "checking required privileges, tenant/profile separation, feature availability, "
+            "and whether C/I/A impact is proven or only plausible"
+        )
+    if hint == "medium":
+        return (
+            "start with a Medium hypothesis and only raise/lower it after documenting "
+            "privileges, attack complexity, and concrete C/I/A impact"
+        )
+    return (
+        "treat the severity hint as informational; document prerequisites and impact "
+        "before assigning a CVSS vector"
+    )
 
 
 def candidate_as_dict(candidate: Candidate) -> dict[str, Any]:

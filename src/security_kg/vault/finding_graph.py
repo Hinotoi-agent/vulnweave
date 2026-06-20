@@ -31,6 +31,9 @@ def build_vault_graph(
                     "path": note.rel_path,
                     "status": note.frontmatter.get("status"),
                     "severity": note.frontmatter.get("severity"),
+                    "cvss_vector": note.frontmatter.get("cvss_vector"),
+                    "cvss_score": note.frontmatter.get("cvss_score"),
+                    "cvss_confidence": note.frontmatter.get("cvss_confidence"),
                 },
             )
         )
